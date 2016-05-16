@@ -96,6 +96,7 @@ class HeaderFileParser:
         self.typedef_rev_dict = {}
         self.types_dict = {}
         self.last_struct_count_name = ''
+        self.opaque_types = []
 
     def setHeaderFile(self, header_file):
         self.header_file = header_file
@@ -108,6 +109,8 @@ class HeaderFileParser:
 
     def get_struct_dict(self):
         return self.struct_dict
+    def get_opaque_types(self):
+        return self.opaque_types
 
     def get_typedef_fwd_dict(self):
         return self.typedef_fwd_dict
@@ -126,12 +129,15 @@ class HeaderFileParser:
         member_num = 0
         # TODO : Comment parsing is very fragile but handles 2 known files
         block_comment = False
+        pointer_to_function_arg_list = False
         prev_count_name = ''
         ifdef_txt = ''
         ifdef_active = 0
         exclude_struct_list = ['VkPlatformHandleXcbKHR', 'VkPlatformHandleX11KHR']
         with open(self.header_file) as f:
+            line_count = 0
             for line in f:
+                line_count += 1
                 if True in [ifd_txt in line for ifd_txt in ['#ifdef ', '#ifndef ']]:
                     ifdef_txt = line.split()[1]
                     ifdef_active = ifdef_active + 1
@@ -224,6 +230,23 @@ class HeaderFileParser:
                     if ';' in line:
                         self._add_struct(line, base_type, member_num)
                         member_num = member_num + 1
+                elif '#define' not in line and ('VK_DEFINE_HANDLE' in line or 'VK_DEFINE_NON_DISPATCHABLE_HANDLE' in line):
+                    base_type = line.replace('VK_DEFINE_NON_DISPATCHABLE_HANDLE', '').replace('VK_DEFINE_HANDLE', '').strip('()\n ')
+                    self.types_dict[base_type] = 'struct'
+                    struct_order_list.append(base_type)
+                    self.struct_dict[base_type] = {}
+                    self.opaque_types.append(base_type)
+                    if ifdef_active:
+                        ifdef_dict[base_type] = ifdef_txt
+                    self.typedef_fwd_dict[base_type] = base_type
+                    self.typedef_rev_dict[base_type] = base_type
+                elif 'PFN_vk' in line and not ';' in line:
+                    pointer_to_function_arg_list = True
+                elif pointer_to_function_arg_list:
+                    if ';' in line:
+                        pointer_to_function_arg_list = False
+                #elif not ifdef_active and not any(token in line for token in ['#include', '#define', '#endif', 'extern', '{', 'PFN_vk', 'uint_34', 'uint_64', 'typedef VkFlags ']):
+                    #print(" *** Warning line #%d: %s ignored" % (line_count, line.strip('\n')))
 
     # populate enum dicts based on enum lines
     def _add_enum(self, line_txt, enum_type, def_enum_val):
@@ -465,8 +488,9 @@ class CommonFileGen:
 # The wrapper class wraps the structs and includes utility functions for
 #  setting/getting member values and displaying the struct data in various formats
 class StructWrapperGen:
-    def __init__(self, in_struct_dict, prefix, out_dir):
+    def __init__(self, in_struct_dict, in_opaque_types, prefix, out_dir):
         self.struct_dict = in_struct_dict
+        self.opaque_types = in_opaque_types
         self.include_headers = []
         self.lineinfo = sourcelineinfo()
         self.api = prefix
@@ -888,6 +912,8 @@ class StructWrapperGen:
         sh_funcs.append('%s' % lineinfo.get())
         for s in sorted(self.struct_dict):
             # Wrap this in platform check since it may contain undefined structs or functions
+            if not self.struct_dict[s]:
+                continue
             add_platform_wrapper_entry(sh_funcs, typedef_fwd_dict[s])
             sh_funcs.append('std::string %s(const %s* pStruct, const std::string prefix);' % (self._get_sh_func_name(s), typedef_fwd_dict[s]))
             add_platform_wrapper_exit(sh_funcs, typedef_fwd_dict[s])
@@ -895,6 +921,8 @@ class StructWrapperGen:
         sh_funcs.append('\n')
         sh_funcs.append('%s' % lineinfo.get())
         for s in sorted(self.struct_dict):
+            if not self.struct_dict[s]:
+                continue
             num_non_enum_elems = [(is_type(self.struct_dict[s][elem]['type'], 'enum') and not self.struct_dict[s][elem]['ptr']) for elem in self.struct_dict[s]].count(False)
             stp_list = [] # stp == "struct to print" a list of structs for this API call that should be printed as structs
             # This pre-pass flags embedded structs and pNext
@@ -977,19 +1005,27 @@ class StructWrapperGen:
                             sh_funcs.append('%sstp_strs[%u] += " " + prefix + "%s[" + index_ss.str() + "] = " + ss[%u].str() + "\\n";' % (indent, index, stp_list[index]['name'], index))
                         elif is_type(stp_list[index]['type'], 'struct'):
                             sh_funcs.append('%s' % lineinfo.get())
-                            sh_funcs.append('%sss[%u] << "0x" << %spStruct->%s[i];' % (indent, index, addr_char, stp_list[index]['name']))
-                            sh_funcs.append('%stmp_str = %s(%spStruct->%s[i], extra_indent);' % (indent, self._get_sh_func_name(stp_list[index]['type']), addr_char, stp_list[index]['name']))
-                            if self.no_addr:
-                                sh_funcs.append('%s' % lineinfo.get())
-                                sh_funcs.append('%sstp_strs[%u] += " " + prefix + "%s[" + index_ss.str() + "] (addr)\\n" + tmp_str;' % (indent, index, stp_list[index]['name']))
+                            if not stp_list[index]['type'] in self.opaque_types:
+                                sh_funcs.append('%sss[%u] << "0x" << hex << nouppercase << %spStruct->%s[i] << dec;' % (indent, index, addr_char, stp_list[index]['name']))
+                                sh_funcs.append('%stmp_str = %s(%spStruct->%s[i], extra_indent);' % (indent, self._get_sh_func_name(stp_list[index]['type']), addr_char, stp_list[index]['name']))
+                                if self.no_addr:
+                                    sh_funcs.append('%s' % lineinfo.get())
+                                    sh_funcs.append('%sstp_strs[%u] += " " + prefix + "%s[" + index_ss.str() + "] (addr)\\n" + tmp_str;' % (indent, index, stp_list[index]['name']))
+                                else:
+                                    sh_funcs.append('%s' % lineinfo.get())
+                                    sh_funcs.append('%sstp_strs[%u] += " " + prefix + "%s[" + index_ss.str() + "] (" + ss[%u].str() + ")\\n" + tmp_str;' % (indent, index, stp_list[index]['name'], index))
                             else:
                                 sh_funcs.append('%s' % lineinfo.get())
-                                sh_funcs.append('%sstp_strs[%u] += " " + prefix + "%s[" + index_ss.str() + "] (" + ss[%u].str() + ")\\n" + tmp_str;' % (indent, index, stp_list[index]['name'], index))
+                                sh_funcs.append('%sss[%u] << "0x" << hex << nouppercase << pStruct->%s[i] << dec;' % (indent, index, stp_list[index]['name']))
+                                sh_funcs.append('%sstp_strs[%u] += " " + prefix + "%s[" + index_ss.str() + "] (" + ss[%u].str() + ")\\n";' % (indent, index, stp_list[index]['name'], index))
                         else:
                             sh_funcs.append('%s' % lineinfo.get())
                             addr_char = ''
                             if stp_list[index]['ptr'] or 'UUID' in stp_list[index]['name']:
-                                sh_funcs.append('%sss[%u] << "0x" << %spStruct->%s[i];' % (indent, index, addr_char, stp_list[index]['name']))
+                                if 'char*' in stp_list[index]['full_type'].strip():
+                                    sh_funcs.append('%sss[%u] << %spStruct->%s[i];' % (indent, index, addr_char, stp_list[index]['name']))
+                                else:
+                                    sh_funcs.append('%sss[%u] << "0x" << hex << nouppercase << %spStruct->%s[i] << dec;' % (indent, index, addr_char, stp_list[index]['name']))
                             else:
                                 sh_funcs.append('%sss[%u] << %spStruct->%s[i];' % (indent, index, addr_char, stp_list[index]['name']))
                             if stp_list[index]['type'] in vulkan.core.objects:
@@ -1022,7 +1058,7 @@ class StructWrapperGen:
                             else:
                                 sh_funcs.append('%s' % lineinfo.get())
                                 sh_funcs.append('        tmp_str = %s(pStruct->%s, extra_indent);' % (self._get_sh_func_name(stp_list[index]['type']), stp_list[index]['name']))
-                        sh_funcs.append('        ss[%u] << "0x" << %spStruct->%s;' % (index, addr_char, stp_list[index]['name']))
+                        sh_funcs.append('        ss[%u] << "0x" << hex << nouppercase << %spStruct->%s << dec;' % (index, addr_char, stp_list[index]['name']))
                         if self.no_addr:
                             sh_funcs.append('%s' % lineinfo.get())
                             sh_funcs.append('        stp_strs[%u] = " " + prefix + "%s (addr)\\n" + tmp_str;' % (index, stp_list[index]['name']))
@@ -1035,30 +1071,41 @@ class StructWrapperGen:
                         sh_funcs.append('        stp_strs[%u] = "";' % index)
                     else:
                         sh_funcs.append('%s' % lineinfo.get())
-                        sh_funcs.append('    tmp_str = %s(&pStruct->%s, extra_indent);' % (self._get_sh_func_name(stp_list[index]['type']), stp_list[index]['name']))
-                        sh_funcs.append('    ss[%u] << "0x" << %spStruct->%s;' % (index, addr_char, stp_list[index]['name']))
-                        if self.no_addr:
-                            sh_funcs.append('    stp_strs[%u] = " " + prefix + "%s (addr)\\n" + tmp_str;' % (index, stp_list[index]['name']))
-                            sh_funcs.append('%s' % lineinfo.get())
+                        if not stp_list[index]['type'] in self.opaque_types:
+                            sh_funcs.append('    tmp_str = %s(&pStruct->%s, extra_indent);' % (self._get_sh_func_name(stp_list[index]['type']), stp_list[index]['name']))
+                            sh_funcs.append('    ss[%u] << "0x" << hex << nouppercase << %spStruct->%s << dec;' % (index, addr_char, stp_list[index]['name']))
+                            if self.no_addr:
+                                sh_funcs.append('%s' % lineinfo.get())
+                                sh_funcs.append('    stp_strs[%u] = " " + prefix + "%s (addr)\\n" + tmp_str;' % (index, stp_list[index]['name']))
+                            else:
+                                sh_funcs.append('%s' % lineinfo.get())
+                                sh_funcs.append('    stp_strs[%u] = " " + prefix + "%s (" + ss[%u].str() + ")\\n" + tmp_str;' % (index, stp_list[index]['name'], index))
                         else:
-                            sh_funcs.append('    stp_strs[%u] = " " + prefix + "%s (" + ss[%u].str() + ")\\n" + tmp_str;' % (index, stp_list[index]['name'], index))
+                            sh_funcs.append('    ss[%u] << "0x" << hex << nouppercase << pStruct->%s << dec;' % (index, stp_list[index]['name']))
                             sh_funcs.append('%s' % lineinfo.get())
-                        sh_funcs.append('    ss[%u].str("");' % index)
+                            sh_funcs.append('    stp_strs[%u] = " " + prefix + "%s (addr)\\n";' % (index, stp_list[index]['name']))
             # Now print one-line info for all data members
             index = 0
             final_str = ''
             for m in sorted(self.struct_dict[s]):
                 if not is_type(self.struct_dict[s][m]['type'], 'enum'):
                     if is_type(self.struct_dict[s][m]['type'], 'struct') and not self.struct_dict[s][m]['ptr']:
-                        if self.no_addr:
+                        if self.struct_dict[s][m]['type'] in self.opaque_types:
+                            sh_funcs.append('%s' % lineinfo.get())
+                            sh_funcs.append('    ss[%u] << "0x" << hex << nouppercase << pStruct->%s << dec;' % (index, self.struct_dict[s][m]['name']))
+                        elif self.no_addr:
                             sh_funcs.append('%s' % lineinfo.get())
                             sh_funcs.append('    ss[%u].str("addr");' % (index))
                         else:
                             sh_funcs.append('%s' % lineinfo.get())
-                            sh_funcs.append('    ss[%u] << "0x" << &pStruct->%s;' % (index, self.struct_dict[s][m]['name']))
+                            sh_funcs.append('    ss[%u] << "0x" << hex << nouppercase << &pStruct->%s << dec;' % (index, self.struct_dict[s][m]['name']))
                     elif self.struct_dict[s][m]['array']:
-                        sh_funcs.append('%s' % lineinfo.get())
-                        sh_funcs.append('    ss[%u] << "0x" << (void*)pStruct->%s;' % (index, self.struct_dict[s][m]['name']))
+                        if 'uint8_t' in self.struct_dict[s][m]['type'].strip():
+                            sh_funcs.append('%s' % lineinfo.get())
+                            sh_funcs.append('    ss[%u] << "0x" << hex << nouppercase << static_cast<const void * const>(pStruct->%s) << dec;' % (index, self.struct_dict[s][m]['name']))
+                        else:
+                            sh_funcs.append('%s' % lineinfo.get())
+                            sh_funcs.append('    ss[%u] << "0x" << hex << nouppercase << pStruct->%s << dec;' % (index, self.struct_dict[s][m]['name']))
                     elif 'bool' in self.struct_dict[s][m]['type'].lower():
                         sh_funcs.append('%s' % lineinfo.get())
                         sh_funcs.append('    ss[%u].str(pStruct->%s ? "TRUE" : "FALSE");' % (index, self.struct_dict[s][m]['name']))
@@ -1068,26 +1115,25 @@ class StructWrapperGen:
                     elif 'void' in self.struct_dict[s][m]['type'].lower() and self.struct_dict[s][m]['ptr']:
                         sh_funcs.append('%s' % lineinfo.get())
                         sh_funcs.append('    if (StreamControl::writeAddress)')
-                        sh_funcs.append('        ss[%u] << "0x" << pStruct->%s;' % (index, self.struct_dict[s][m]['name']))
+                        sh_funcs.append('        ss[%u] << "0x" << hex << nouppercase << pStruct->%s << dec;' % (index, self.struct_dict[s][m]['name']))
                         sh_funcs.append('    else')
                         sh_funcs.append('        ss[%u].str("address");' % (index))
                     elif 'char' in self.struct_dict[s][m]['type'].lower() and self.struct_dict[s][m]['ptr']:
                         sh_funcs.append('%s' % lineinfo.get())
                         sh_funcs.append('    if (pStruct->%s != NULL) {' % self.struct_dict[s][m]['name'])
-                        sh_funcs.append('        ss[%u] << pStruct->%s;' % (index, self.struct_dict[s][m]['name']))
+                        sh_funcs.append('        ss[%u] << "0x" << hex << nouppercase << pStruct->%s << dec;' % (index, self.struct_dict[s][m]['name']))
                         sh_funcs.append('     } else {')
                         sh_funcs.append('        ss[%u] << "";' % index)
                         sh_funcs.append('     }')
                     else:
-                        if self.struct_dict[s][m]['ptr'] or \
-                           'Vk' in self.struct_dict[s][m]['full_type'] or \
-                           'PFN_vk' in self.struct_dict[s][m]['full_type']:
+                        if self.struct_dict[s][m]['ptr']:
                             sh_funcs.append('%s' % lineinfo.get())
-                            sh_funcs.append('    ss[%u] << "0x" << pStruct->%s;' % (index, self.struct_dict[s][m]['name']))
-                        elif any (x in self.struct_dict[s][m]['name'].lower() for x in ("flag", "bit", "offset", "handle", "buffer", "object", "mask")) or \
-                             'ID' in self.struct_dict[s][m]['name']:
+                            sh_funcs.append('    ss[%u] << "0x" << hex << nouppercase << pStruct->%s << dec;' % (index, self.struct_dict[s][m]['name']))
+                        elif not self.struct_dict[s][m]['name'].lower().endswith('count') and \
+                             any (x in self.struct_dict[s][m]['name'].lower() for x in ("flag", "bit", "offset", "pfn", "handle", "buffer", "object", "mask")) or \
+                             'ID' in self.struct_dict[s][m]['name'] :
                             sh_funcs.append('%s: NB: Edit here to choose hex vs dec output by variable name' % lineinfo.get())
-                            sh_funcs.append('    ss[%u] << "0x" << pStruct->%s;' % (index, self.struct_dict[s][m]['name']))
+                            sh_funcs.append('    ss[%u] << "0x" << hex << nouppercase << pStruct->%s << dec;' % (index, self.struct_dict[s][m]['name']))
                         else:
                             sh_funcs.append('%s: NB Edit this section to choose hex vs dec output by variable name' % lineinfo.get())
                             sh_funcs.append('    ss[%u] << pStruct->%s;' % (index, self.struct_dict[s][m]['name']))
@@ -1098,7 +1144,7 @@ class StructWrapperGen:
                     if self.struct_dict[s][m]['ptr']:
                         sh_funcs.append('%s' % lineinfo.get())
                         sh_funcs.append('    if (pStruct->%s)' % (self.struct_dict[s][m]['name']))
-                        sh_funcs.append('        ss[%u] << "0x" << pStruct->%s << " (See individual array values below)";' % (index, self.struct_dict[s][m]['name']))
+                        sh_funcs.append('        ss[%u] << "0x" << hex << nouppercase << pStruct->%s << dec << " (See individual array values below)";' % (index, self.struct_dict[s][m]['name']))
                         sh_funcs.append('    else')
                         sh_funcs.append('        ss[%u].str("NULL");' % (index))
                         value_print = 'ss[%u].str()' % index
@@ -1417,7 +1463,7 @@ class StructWrapperGen:
                             sh_funcs.append('%s}' % (indent))
                         else:
                             sh_funcs.append('%sstructSize += pStruct->%s*sizeof(%s);' % (indent, self.struct_dict[s][m]['array_size'], self.struct_dict[s][m]['type']))
-                elif self.struct_dict[s][m]['ptr'] and 'pNext' != self.struct_dict[s][m]['name']:
+                elif self.struct_dict[s][m]['ptr'] and 'pNext' != self.struct_dict[s][m]['name'] and 'dpy' != self.struct_dict[s][m]['name']:
                     if 'char' in self.struct_dict[s][m]['type'].lower():
                         sh_funcs.append('%sstructSize += (pStruct->%s != NULL) ? sizeof(%s)*(1+strlen(pStruct->%s)) : 0;' % (indent, self.struct_dict[s][m]['name'], self.struct_dict[s][m]['type'], self.struct_dict[s][m]['name']))
                     elif is_type(self.struct_dict[s][m]['type'], 'struct'):
@@ -1509,9 +1555,10 @@ class StructWrapperGen:
     # Declarations
     def _generateConstructorDeclarations(self, s):
         constructors = []
-        constructors.append("    %s();\n" % self.get_class_name(s))
-        constructors.append("    %s(%s* pInStruct);\n" % (self.get_class_name(s), typedef_fwd_dict[s]))
-        constructors.append("    %s(const %s* pInStruct);\n" % (self.get_class_name(s), typedef_fwd_dict[s]))
+        class_name = self.get_class_name(s)
+        constructors.append("    %s();\n" % class_name)
+        constructors.append("    %s(%s* pInStruct);\n" % (class_name, typedef_fwd_dict[s]))
+        constructors.append("    %s(const %s* pInStruct);\n" % (class_name, typedef_fwd_dict[s]))
         return "".join(constructors)
 
     def _generateDestructorDeclarations(self, s):
@@ -1564,7 +1611,7 @@ class StructWrapperGen:
     # If struct has sType or ptr members, generate safe type
     def _hasSafeStruct(self, s):
         exceptions = ['VkPhysicalDeviceFeatures', 'VkPipelineColorBlendStateCreateInfo', 'VkDebugMarkerMarkerInfoEXT']
-        if s in exceptions:
+        if s in exceptions or not self.struct_dict[s]:
             return False
         if 'sType' == self.struct_dict[s][0]['name']:
             return True
@@ -2137,12 +2184,14 @@ def main(argv=None):
     global enum_val_dict
     global enum_type_dict
     global struct_dict
+    global opaque_types
     global typedef_fwd_dict
     global typedef_rev_dict
     global types_dict
     enum_val_dict = hfp.get_enum_val_dict()
     enum_type_dict = hfp.get_enum_type_dict()
     struct_dict = hfp.get_struct_dict()
+    opaque_types = hfp.get_opaque_types()
     # TODO : Would like to validate struct data here to verify that all of the bools for struct members are correct at this point
     typedef_fwd_dict = hfp.get_typedef_fwd_dict()
     typedef_rev_dict = hfp.get_typedef_rev_dict()
@@ -2175,7 +2224,7 @@ def main(argv=None):
     #for struct in struct_dict:
     #print(struct)
     if opts.gen_struct_wrappers:
-        sw = StructWrapperGen(struct_dict, os.path.basename(opts.input_file).strip(".h"), os.path.dirname(enum_sh_filename))
+        sw = StructWrapperGen(struct_dict, opaque_types, os.path.basename(opts.input_file).strip(".h"), os.path.dirname(enum_sh_filename))
         #print(sw.get_class_name(struct))
         sw.set_include_headers([input_header,os.path.basename(enum_sh_filename),"stdint.h","cinttypes", "stdio.h","stdlib.h"])
         print("Generating struct wrapper header to %s" % sw.header_filename)

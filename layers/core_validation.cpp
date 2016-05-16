@@ -4098,7 +4098,7 @@ static bool ValidateCmdBufImageLayouts(VkCommandBuffer cmdBuffer) {
                     skip_call |= log_msg(
                         dev_data->report_data, VK_DEBUG_REPORT_ERROR_BIT_EXT, VK_DEBUG_REPORT_OBJECT_TYPE_COMMAND_BUFFER_EXT,
                         reinterpret_cast<uint64_t &>(cmdBuffer), __LINE__, DRAWSTATE_INVALID_IMAGE_LAYOUT, "DS",
-                        "Cannot submit cmd buffer using image (0x%" PRIx64 ") [sub-resource: aspectMask 0x%X array layer %u, mip level %u], "
+                        "Cannot submit cmd buffer using image (0x%" PRIx64 ") [sub-resource: aspectMask 0x%x array layer %u, mip level %u], "
                         "with layout %s when first use is %s.",
                         reinterpret_cast<const uint64_t &>(cb_image_data.first.image), cb_image_data.first.subresource.aspectMask,
                                 cb_image_data.first.subresource.arrayLayer,
