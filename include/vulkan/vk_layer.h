@@ -240,16 +240,20 @@ typedef struct VkLayerDbgFunctionNode_ {
     PFN_vkDebugReportCallbackEXT pfnMsgCallback;
     VkFlags msgFlags;
     void *pUserData;
+    bool default_callback;
     struct VkLayerDbgFunctionNode_ *pNext;
 } VkLayerDbgFunctionNode;
 
-typedef enum VkLayerDbgAction_ {
-    VK_DBG_LAYER_ACTION_IGNORE = 0x0,
-    VK_DBG_LAYER_ACTION_CALLBACK = 0x1,
-    VK_DBG_LAYER_ACTION_LOG_MSG = 0x2,
-    VK_DBG_LAYER_ACTION_BREAK = 0x4,
-    VK_DBG_LAYER_ACTION_DEBUG_OUTPUT = 0x8,
-} VkLayerDbgAction;
+typedef enum VkLayerDbgActionBits {
+    VK_DBG_LAYER_ACTION_IGNORE = 0x00000000,
+    VK_DBG_LAYER_ACTION_CALLBACK = 0x00000001,
+    VK_DBG_LAYER_ACTION_LOG_MSG = 0x00000002,
+    VK_DBG_LAYER_ACTION_BREAK = 0x00000004,
+    VK_DBG_LAYER_ACTION_DEBUG_OUTPUT = 0x00000008,
+    VK_DBG_LAYER_ACTION_DEFAULT = 0x40000000,
+} VkLayerDbgActionBits;
+typedef VkFlags VkLayerDbgActionFlags;
+
 
 // ------------------------------------------------------------------------------------------------
 // CreateInstance and CreateDevice support structures

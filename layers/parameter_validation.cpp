@@ -109,7 +109,7 @@ vkCreateDebugReportCallbackEXT(VkInstance instance, const VkDebugReportCallbackC
 
     if (result == VK_SUCCESS) {
         layer_data *data = get_my_data_ptr(get_dispatch_key(instance), layer_data_map);
-        result = layer_create_msg_callback(data->report_data, pCreateInfo, pAllocator, pMsgCallback);
+        result = layer_create_msg_callback(data->report_data, false, pCreateInfo, pAllocator, pMsgCallback);
     }
 
     return result;

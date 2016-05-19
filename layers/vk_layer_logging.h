@@ -116,9 +116,10 @@ static inline debug_report_data *layer_debug_report_create_device(debug_report_d
     return instance_debug_data;
 }
 
-static inline void layer_debug_report_destroy_device(VkDevice device) { /* Nothing to do since we're using instance data record */ }
+static inline void layer_debug_report_destroy_device(VkDevice device) { /* Nothing to do since we're using instance data record */
+}
 
-static inline VkResult layer_create_msg_callback(debug_report_data *debug_data,
+static inline VkResult layer_create_msg_callback(debug_report_data *debug_data, bool default_callback,
                                                  const VkDebugReportCallbackCreateInfoEXT *pCreateInfo,
                                                  const VkAllocationCallbacks *pAllocator, VkDebugReportCallbackEXT *pCallback) {
     /* TODO: Use app allocator */
@@ -133,11 +134,37 @@ static inline VkResult layer_create_msg_callback(debug_report_data *debug_data,
     pNewDbgFuncNode->pfnMsgCallback = pCreateInfo->pfnCallback;
     pNewDbgFuncNode->msgFlags = pCreateInfo->flags;
     pNewDbgFuncNode->pUserData = pCreateInfo->pUserData;
+    pNewDbgFuncNode->default_callback = default_callback;
     pNewDbgFuncNode->pNext = debug_data->g_pDbgFunctionHead;
 
     debug_data->g_pDbgFunctionHead = pNewDbgFuncNode;
     debug_data->active_flags |= pCreateInfo->flags;
 
+
+    if (default_callback == false) {
+        // If the user registers a callback, unregister and remove any default callbacks
+        VkLayerDbgFunctionNode *pTrav = debug_data->g_pDbgFunctionHead;
+        VkLayerDbgFunctionNode *pPrev = pTrav;
+        VkLayerDbgFunctionNode *del_node = NULL;
+
+        while (pTrav) {
+            if (pTrav->default_callback == true) {
+                del_node = pTrav;
+                pPrev->pNext = pTrav->pNext;
+                if (debug_data->g_pDbgFunctionHead == pTrav) {
+                    debug_data->g_pDbgFunctionHead = pTrav->pNext;
+                }
+                debug_report_log_msg(debug_data, VK_DEBUG_REPORT_DEBUG_BIT_EXT, VK_DEBUG_REPORT_OBJECT_TYPE_DEBUG_REPORT_EXT,
+                    (uint64_t)pTrav->msgCallback, 0, VK_DEBUG_REPORT_ERROR_CALLBACK_REF_EXT, "DebugReport",
+                    "Removed default_callback -- no vk_layer_settings file was specified but an app-registered callback was encountered.");
+                pTrav = pTrav->pNext;
+                free(del_node);
+            } else {
+                pPrev = pTrav;
+                pTrav = pTrav->pNext;
+            }
+        }
+    }
     debug_report_log_msg(debug_data, VK_DEBUG_REPORT_DEBUG_BIT_EXT, VK_DEBUG_REPORT_OBJECT_TYPE_DEBUG_REPORT_EXT,
                          (uint64_t)*pCallback, 0, VK_DEBUG_REPORT_ERROR_CALLBACK_REF_EXT, "DebugReport", "Added callback");
     return VK_SUCCESS;
@@ -253,7 +280,7 @@ static VkResult layer_enable_tmp_callbacks(debug_report_data *debug_data, uint32
                                            VkDebugReportCallbackCreateInfoEXT *infos, VkDebugReportCallbackEXT *callbacks) {
     VkResult rtn = VK_SUCCESS;
     for (uint32_t i = 0; i < num_callbacks; i++) {
-        rtn = layer_create_msg_callback(debug_data, &infos[i], NULL, &callbacks[i]);
+        rtn = layer_create_msg_callback(debug_data, false, &infos[i], NULL, &callbacks[i]);
         if (rtn != VK_SUCCESS) {
             for (uint32_t j = 0; j < i; j++) {
                 layer_destroy_msg_callback(debug_data, callbacks[j], NULL);
