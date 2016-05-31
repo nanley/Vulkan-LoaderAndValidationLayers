@@ -604,6 +604,7 @@ VkStringErrorFlags vk_string_validate(const int max_length, const char *utf8) {
     return result;
 }
 
+
 // Debug callbacks get created in three ways:
 //   o  Application-defined debug callbacks
 //   o  Through settings in a vk_layer_settings.txt file

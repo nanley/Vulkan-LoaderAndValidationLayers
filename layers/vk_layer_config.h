@@ -23,6 +23,7 @@
 #include <unordered_map>
 #include <stdbool.h>
 #include <stdio.h>
+#include <mutex>
 
 #ifdef __cplusplus
 extern "C" {
@@ -38,6 +39,8 @@ typedef enum VkLayerDbgActionBits {
     VK_DBG_LAYER_ACTION_DEFAULT = 0x40000000,
 } VkLayerDbgActionBits;
 typedef VkFlags VkLayerDbgActionFlags;
+
+extern std::once_flag first_log_message;
 
 const std::unordered_map<std::string, VkFlags> debug_actions_option_definitions = {
     {std::string("VK_DBG_LAYER_ACTION_IGNORE"), VK_DBG_LAYER_ACTION_IGNORE},

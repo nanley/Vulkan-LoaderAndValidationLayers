@@ -34,6 +34,7 @@
 #include <stdio.h>
 #include <unordered_map>
 #include <vector>
+#include <mutex>
 
 typedef struct _debug_report_data {
     VkLayerDbgFunctionNode *g_pDbgFunctionHead;
@@ -44,12 +45,42 @@ typedef struct _debug_report_data {
 template debug_report_data *get_my_data_ptr<debug_report_data>(void *data_key,
                                                                std::unordered_map<void *, debug_report_data *> &data_map);
 
+static inline void OutputLogMsgHeader(const debug_report_data *debug_data) {
+    VkLayerDbgFunctionNode *pTrav = debug_data->g_pDbgFunctionHead;
+    while (pTrav) {
+        char *message_header = "*******************************************************************************************\n"
+                               "* Vulkan Validation Layer Debug Output                                                    *\n"
+                               "*                                                                                         *\n"
+                               "* Debug Output Type Definitions:                                                          *\n"
+                               "* ------------------------------                                                          *\n"
+                               "* ERROR: Errors are output when a validation layer detects that some application behavior *\n"
+                               "*        has violated the Vulkan Specification.                                           *\n"
+                               "* WARN:  Warnings are output in cases where mistakes are commonly made and do NOT         *\n"
+                               "*        necessarily indicate that an app has violated the Vulkan Specification.          *\n"
+                               "*        Warnings basically translate to 'Did you really mean to do this?'                *\n"
+                               "* PERF:  Performance Warnings are output in cases where a possible inefficiency has been  *\n"
+                               "*        detected.  These also do NOT imply that the specification was violated.          *\n"
+                               "* INFO:  These log messages are for informational purposes only. For instance, the        *\n"
+                               "*        core_validation layer can print out lists of memory objects and their bindings   *\n"
+                               "*        which may help with debugging or improving application efficiency.               *\n"
+                               "*******************************************************************************************\n";
+
+        pTrav->pfnMsgCallback(VK_DEBUG_REPORT_DEBUG_BIT_EXT, VK_DEBUG_REPORT_OBJECT_TYPE_DEBUG_REPORT_EXT, 0, 0,
+                              VK_DEBUG_REPORT_ERROR_CALLBACK_REF_EXT, "DebugReport", message_header, pTrav->pUserData);
+        pTrav = pTrav->pNext;
+    }
+}
+
 // Utility function to handle reporting
-static inline bool debug_report_log_msg(const debug_report_data *debug_data, VkFlags msgFlags, VkDebugReportObjectTypeEXT objectType,
-                                        uint64_t srcObject, size_t location, int32_t msgCode, const char *pLayerPrefix,
-                                        const char *pMsg) {
+static inline bool debug_report_log_msg(const debug_report_data *debug_data, VkFlags msgFlags,
+                                        VkDebugReportObjectTypeEXT objectType, uint64_t srcObject, size_t location, int32_t msgCode,
+                                        const char *pLayerPrefix, const char *pMsg) {
     bool bail = false;
     VkLayerDbgFunctionNode *pTrav = debug_data->g_pDbgFunctionHead;
+
+    std::call_once(first_log_message,  &OutputLogMsgHeader, debug_data);
+    //OutputLogMsgHeader(debug_data);
+
     while (pTrav) {
         if (pTrav->msgFlags & msgFlags) {
             if (pTrav->pfnMsgCallback(msgFlags, objectType, srcObject, location, msgCode, pLayerPrefix, pMsg, pTrav->pUserData)) {
@@ -84,6 +115,7 @@ debug_report_create_instance(VkLayerInstanceDispatchTable *table, VkInstance ins
             debug_data->g_DEBUG_REPORT = true;
         }
     }
+
     return debug_data;
 }
 

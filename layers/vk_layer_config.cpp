@@ -32,6 +32,9 @@
 
 #define MAX_CHARS_PER_LINE 4096
 
+// Flag for ONE-TIME debug output initialization
+std::once_flag first_log_message;
+
 class ConfigFile {
   public:
     ConfigFile();
