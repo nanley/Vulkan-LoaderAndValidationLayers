@@ -6313,6 +6313,19 @@ CmdSetViewport(VkCommandBuffer commandBuffer, uint32_t firstViewport, uint32_t v
     GLOBAL_CB_NODE *pCB = getCBNode(dev_data, commandBuffer);
     if (pCB) {
         skipCall |= addCmd(dev_data, pCB, CMD_SETVIEWPORTSTATE, "vkCmdSetViewport()");
+        auto pipe_node = getPipeline(dev_data, pCB->lastBound[VK_PIPELINE_BIND_POINT_GRAPHICS].pipeline);
+        if (pip_node && pipe_node->graphicsPipelineCI.pDynamicState) {
+            bool state_error = true;
+            for (uint32_t i = 0; i < pipe_node->graphicsPipelineCI.pDynamicState->dynamicStateCount; ++i) {
+                if (pipe_node->graphicsPipelineCI.pDynamicState->pDynamicStates[i] == VK_DYNAMIC_STATE_VIEWPORT) {
+                    state_error = false;
+                    break;
+                }
+            }
+            if (state_error) {
+                // TODO : Report error here
+            }
+        }
         pCB->status |= CBSTATUS_VIEWPORT_SET;
         pCB->viewports.resize(viewportCount);
         memcpy(pCB->viewports.data(), pViewports, viewportCount * sizeof(VkViewport));
