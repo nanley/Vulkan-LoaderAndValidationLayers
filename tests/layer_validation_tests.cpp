@@ -2849,6 +2849,119 @@ TEST_F(VkLayerTest, BindMemoryToDestroyedObject) {
 
 #if DRAW_STATE_TESTS
 
+// This is a positive test. No errors are expected.
+TEST_F(VkLayerTest, StencilLoadOp) {
+    TEST_DESCRIPTION("Create a stencil-only attachment with a LOAD_OP set to "
+                     "CLEAR. stencil[Load|Store]Op used to be ignored.");
+    m_errorMonitor->ExpectSuccess();
+
+    ASSERT_NO_FATAL_FAILURE(InitState());
+
+    VkFormat depth_stencil_fmt = VK_FORMAT_D24_UNORM_S8_UINT;
+    m_depthStencil->Init(m_device, 100, 100, depth_stencil_fmt);
+
+    VkAttachmentDescription att = {};
+    VkAttachmentReference ref = {};
+    att.format = depth_stencil_fmt;
+    att.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    att.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    att.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+    att.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    att.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkClearValue clear;
+    clear.depthStencil.depth = 1.0;
+    clear.depthStencil.stencil = 0;
+
+    ref.attachment = 0;
+    ref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkSubpassDescription subpass = {};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.flags = 0;
+    subpass.inputAttachmentCount = 0;
+    subpass.pInputAttachments = NULL;
+    subpass.colorAttachmentCount = 0;
+    subpass.pColorAttachments = NULL;
+    subpass.pResolveAttachments = NULL;
+    subpass.pDepthStencilAttachment = &ref;
+    subpass.preserveAttachmentCount = 0;
+    subpass.pPreserveAttachments = NULL;
+
+    VkRenderPass rp;
+    VkRenderPassCreateInfo rp_info = {};
+    rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    rp_info.attachmentCount = 1;
+    rp_info.pAttachments = &att;
+    rp_info.subpassCount = 1;
+    rp_info.pSubpasses = &subpass;
+
+    vkCreateRenderPass(device(), &rp_info, NULL, &rp);
+
+    VkImageView *depthView = m_depthStencil->BindInfo();
+    VkFramebufferCreateInfo fb_info = {};
+    fb_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    fb_info.pNext = NULL;
+    fb_info.renderPass = rp;
+    fb_info.attachmentCount = 1;
+    fb_info.pAttachments = depthView;
+    fb_info.width = 100;
+    fb_info.height = 100;
+    fb_info.layers = 1;
+
+    VkFramebuffer fb;
+    vkCreateFramebuffer(device(), &fb_info, NULL, &fb);
+
+    VkRenderPassBeginInfo rpbinfo = {};
+    rpbinfo.clearValueCount = 1;
+    rpbinfo.pClearValues = &clear;
+    rpbinfo.pNext = NULL;
+    rpbinfo.renderPass = rp;
+    rpbinfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rpbinfo.renderArea.extent.width = 100;
+    rpbinfo.renderArea.extent.height = 100;
+    rpbinfo.renderArea.offset.x = 0;
+    rpbinfo.renderArea.offset.y = 0;
+    rpbinfo.framebuffer = fb;
+
+    m_commandBuffer->BeginCommandBuffer();
+    m_commandBuffer->BeginRenderPass(rpbinfo);
+    m_commandBuffer->EndRenderPass();
+    VkImageObj destImage(m_device);
+    destImage.init(100, 100, depth_stencil_fmt,
+        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_TILING_OPTIMAL, 0);
+
+    destImage.SetLayout(VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
+    VkImageCopy cregion;
+    cregion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    cregion.srcSubresource.mipLevel = 0;
+    cregion.srcSubresource.baseArrayLayer = 0;
+    cregion.srcSubresource.layerCount = 1;
+    cregion.srcOffset.x = 0;
+    cregion.srcOffset.y = 0;
+    cregion.srcOffset.z = 0;
+    cregion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    cregion.dstSubresource.mipLevel = 0;
+    cregion.dstSubresource.baseArrayLayer = 0;
+    cregion.dstSubresource.layerCount = 1;
+    cregion.dstOffset.x = 0;
+    cregion.dstOffset.y = 0;
+    cregion.dstOffset.z = 0;
+    cregion.extent.width = 100;
+    cregion.extent.height = 100;
+    cregion.extent.depth = 1;
+    m_commandBuffer->CopyImage(m_depthStencil->handle(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        destImage.handle(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        1, &cregion);
+    m_commandBuffer->EndCommandBuffer();
+    m_commandBuffer->QueueCommandBuffer();
+
+    m_errorMonitor->VerifyNotFound();
+
+}
+
 // This is a positive test.  No errors should be generated.
 TEST_F(VkLayerTest, WaitEventThenSet) {
     TEST_DESCRIPTION(
