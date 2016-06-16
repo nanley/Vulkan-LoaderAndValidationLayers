@@ -2853,12 +2853,16 @@ TEST_F(VkLayerTest, BindMemoryToDestroyedObject) {
 TEST_F(VkLayerTest, StencilLoadOp) {
     TEST_DESCRIPTION("Create a stencil-only attachment with a LOAD_OP set to "
                      "CLEAR. stencil[Load|Store]Op used to be ignored.");
+    VkImageFormatProperties formatProps;
+    vkGetPhysicalDeviceImageFormatProperties(gpu(), VK_FORMAT_D24_UNORM_S8_UINT, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, 0, &formatProps);
+    if (formatProps.maxExtent.width < 100 || formatProps.maxExtent.height < 100)
+        return;
     m_errorMonitor->ExpectSuccess();
 
     ASSERT_NO_FATAL_FAILURE(InitState());
 
     VkFormat depth_stencil_fmt = VK_FORMAT_D24_UNORM_S8_UINT;
-    m_depthStencil->Init(m_device, 100, 100, depth_stencil_fmt);
+    m_depthStencil->Init(m_device, 100, 100, depth_stencil_fmt, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
 
     VkAttachmentDescription att = {};
     VkAttachmentReference ref = {};
@@ -2925,24 +2929,62 @@ TEST_F(VkLayerTest, StencilLoadOp) {
     rpbinfo.renderArea.offset.y = 0;
     rpbinfo.framebuffer = fb;
 
+    VkFence fence = {};
+    VkFenceCreateInfo fence_ci = {};
+    fence_ci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fence_ci.pNext = nullptr;
+    fence_ci.flags = 0;
+    vkCreateFence(m_device->device(), &fence_ci, nullptr, &fence);
+
     m_commandBuffer->BeginCommandBuffer();
     m_commandBuffer->BeginRenderPass(rpbinfo);
     m_commandBuffer->EndRenderPass();
+    m_commandBuffer->EndCommandBuffer();
+    m_commandBuffer->QueueCommandBuffer(fence);
+
     VkImageObj destImage(m_device);
     destImage.init(100, 100, depth_stencil_fmt,
-        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_TILING_OPTIMAL, 0);
+        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_TILING_OPTIMAL, 0);
 
-    destImage.SetLayout(VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    VkImageMemoryBarrier barrier = {};
+    VkImageSubresourceRange range;
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.image = m_depthStencil->handle();
+    range.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+    range.baseMipLevel = 0;
+    range.levelCount = 1;
+    range.baseArrayLayer = 0;
+    range.layerCount = 1;
+    barrier.subresourceRange = range;
+    vkWaitForFences(m_device->device(), 1, &fence, VK_TRUE, UINT64_MAX);
+    VkCommandBufferObj cmdbuf(m_device, m_commandPool);
+    cmdbuf.BeginCommandBuffer();
+    cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    barrier.srcAccessMask = 0;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.image = destImage.handle();
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+
+    //m_depthStencil->SetLayout(VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    //destImage.SetLayout(VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     VkImageCopy cregion;
-    cregion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    cregion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
     cregion.srcSubresource.mipLevel = 0;
     cregion.srcSubresource.baseArrayLayer = 0;
     cregion.srcSubresource.layerCount = 1;
     cregion.srcOffset.x = 0;
     cregion.srcOffset.y = 0;
     cregion.srcOffset.z = 0;
-    cregion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    cregion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
     cregion.dstSubresource.mipLevel = 0;
     cregion.dstSubresource.baseArrayLayer = 0;
     cregion.dstSubresource.layerCount = 1;
@@ -2952,13 +2994,16 @@ TEST_F(VkLayerTest, StencilLoadOp) {
     cregion.extent.width = 100;
     cregion.extent.height = 100;
     cregion.extent.depth = 1;
-    m_commandBuffer->CopyImage(m_depthStencil->handle(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-        destImage.handle(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    cmdbuf.CopyImage(m_depthStencil->handle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        destImage.handle(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         1, &cregion);
-    m_commandBuffer->EndCommandBuffer();
-    m_commandBuffer->QueueCommandBuffer();
+    cmdbuf.EndCommandBuffer();
+    cmdbuf.QueueCommandBuffer();
 
     m_errorMonitor->VerifyNotFound();
+    vkDestroyFence(m_device->device(), fence, nullptr);
+    vkDestroyRenderPass(m_device->device(), rp, nullptr);
+    vkDestroyFramebuffer(m_device->device(), fb, nullptr);
 
 }
 
