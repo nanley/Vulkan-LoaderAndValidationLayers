@@ -66,7 +66,6 @@ WindowIcon off
 
   # Define name of installer
   OutFile "VulkanRT-${PRODUCTVERSION}-Installer.exe"
-  SetCompressor /SOLID lzma
 
 !endif
 
