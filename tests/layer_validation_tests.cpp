@@ -252,7 +252,7 @@ class VkLayerTest : public VkRenderFramework {
         m_commandBuffer->DrawIndexed(indexCount, instanceCount, firstIndex,
                                      vertexOffset, firstInstance);
     }
-    void QueueCommandBuffer() { m_commandBuffer->QueueCommandBuffer(); }
+    void QueueCommandBuffer(bool checkSuccess = true) { m_commandBuffer->QueueCommandBuffer(checkSuccess); }
     void QueueCommandBuffer(const VkFence &fence) {
         m_commandBuffer->QueueCommandBuffer(fence);
     }
@@ -9645,6 +9645,122 @@ TEST_F(VkLayerTest, VtxBufferBadIndex) {
     vkDestroyDescriptorSetLayout(m_device->device(), ds_layout, NULL);
     vkDestroyDescriptorPool(m_device->device(), ds_pool, NULL);
 }
+
+TEST_F(VkLayerTest, VertexBufferInvalid) {
+    TEST_DESCRIPTION("Submit a command buffer using deleted vertex buffer, delete a buffer twice,"
+                     " use an invalid offset for each buffer type, and ");
+
+    const char *deleted_buffer_in_command_buffer = "Cannot submit cmd buffer using deleted buffer ";
+    const char *double_destroy_message = "Cannot free buffer 0x";
+    const char *invalid_offset_message = "vkBindBufferMemory(): memoryOffset is 0x";
+    const char *invalid_storage_buffer_offset_message = "vkBindBufferMemory(): storage memoryOffset is 0x";
+    const char *invalid_texel_buffer_offset_message = "vkBindBufferMemory(): texel memoryOffset is 0x";
+    const char *invalid_uniform_buffer_offset_message = "vkBindBufferMemory(): uniform memoryOffset is 0x";
+    const char *bind_null_buffer_message = "In vkBindBufferMemory, attempting to Bind Obj(0x";
+
+    ASSERT_NO_FATAL_FAILURE(InitState());
+    ASSERT_NO_FATAL_FAILURE(InitViewport());
+    ASSERT_NO_FATAL_FAILURE(InitRenderTarget());
+
+    VkPipelineMultisampleStateCreateInfo pipe_ms_state_ci = {};
+    pipe_ms_state_ci.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    pipe_ms_state_ci.pNext = NULL;
+    pipe_ms_state_ci.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    pipe_ms_state_ci.sampleShadingEnable = 0;
+    pipe_ms_state_ci.minSampleShading = 1.0;
+    pipe_ms_state_ci.pSampleMask = nullptr;
+
+    VkPipelineLayoutCreateInfo pipeline_layout_ci = {};
+    pipeline_layout_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    VkPipelineLayout pipeline_layout;
+
+    VkResult err = vkCreatePipelineLayout(m_device->device(), &pipeline_layout_ci, nullptr, &pipeline_layout);
+    ASSERT_VK_SUCCESS(err);
+
+    VkShaderObj vs(m_device, bindStateVertShaderText, VK_SHADER_STAGE_VERTEX_BIT, this);
+    VkShaderObj fs(m_device, bindStateFragShaderText, VK_SHADER_STAGE_FRAGMENT_BIT, this); // We shouldn't need a fragment shader
+                          // but add it to be able to run on more devices
+    VkPipelineObj pipe(m_device);
+    pipe.AddShader(&vs);
+    pipe.AddShader(&fs);
+    pipe.AddColorAttachment();
+    pipe.SetMSAA(&pipe_ms_state_ci);
+    pipe.SetViewport(m_viewports);
+    pipe.SetScissor(m_scissors);
+    pipe.CreateVKPipeline(pipeline_layout, renderPass());
+
+    BeginCommandBuffer();
+    vkCmdBindPipeline(m_commandBuffer->GetBufferHandle(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.handle());
+
+    {
+        // Create and bind a vertex buffer in a reduced scope, and delete it twice, the second through the destructor
+        const float vbo_data[3] = {1.f, 0.f, 1.f};
+        cVertices draw_verticies(m_device, 1, 1, sizeof(vbo_data), 3, vbo_data);
+        m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, double_destroy_message);
+        draw_verticies.TestDoubleDestroy();
+    }
+    m_errorMonitor->VerifyFound();
+
+    {
+        // Create and bind a vertex buffer in a reduced scope, which will cause it to be deleted upon leaving this scope
+        const float vbo_data[3] = {1.f, 0.f, 1.f};
+        cVertices draw_verticies(m_device, 1, 1, sizeof(vbo_data), 3, vbo_data);
+        draw_verticies.BindVertexBuffers(m_commandBuffer->handle());
+        draw_verticies.AddVertexInputToPipe(pipe);
+    }
+
+    Draw(1, 0, 0, 0);
+
+    EndCommandBuffer();
+
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, deleted_buffer_in_command_buffer);
+    QueueCommandBuffer(false);
+    m_errorMonitor->VerifyFound();
+
+    {
+        // Create and bind a memory buffer with an invalid offset.
+        m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, invalid_offset_message);
+        cMemoryBuffer test_buffer(m_device, VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT, cMemoryBuffer::eInvalidOffsetForBind);
+        (void) test_buffer;
+        m_errorMonitor->VerifyFound();
+    }
+
+    {
+        // Create and bind a memory buffer with an invalid offset again, but look for a texel buffer message.
+        m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, invalid_texel_buffer_offset_message);
+        cMemoryBuffer test_buffer(m_device, VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT, cMemoryBuffer::eInvalidOffsetForBind);
+        (void) test_buffer;
+        m_errorMonitor->VerifyFound();
+    }
+
+    {
+        // Create and bind a memory buffer with an invalid offset again, but look for a uniform buffer message.
+        m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, invalid_uniform_buffer_offset_message);
+        cMemoryBuffer test_buffer(m_device, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, cMemoryBuffer::eInvalidOffsetForBind);
+        (void) test_buffer;
+        m_errorMonitor->VerifyFound();
+    }
+
+    {
+        // Create and bind a memory buffer with an invalid offset again, but look for a storage buffer message.
+        m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, invalid_storage_buffer_offset_message);
+        cMemoryBuffer test_buffer(m_device, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, cMemoryBuffer::eInvalidOffsetForBind);
+        (void) test_buffer;
+        m_errorMonitor->VerifyFound();
+    }
+
+    {
+        // Attempt to bind a null buffer.
+        m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, bind_null_buffer_message);
+        cMemoryBuffer test_buffer(m_device, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, cMemoryBuffer::eBindNullBuffer);
+        (void) test_buffer;
+        m_errorMonitor->VerifyFound();
+    }
+
+    vkDestroyPipelineLayout(m_device->device(), pipeline_layout, NULL);
+}
+
 // INVALID_IMAGE_LAYOUT tests (one other case is hit by MapMemWithoutHostVisibleBit and not here)
 TEST_F(VkLayerTest, InvalidImageLayout) {
     TEST_DESCRIPTION("Hit all possible validation checks associated with the "
