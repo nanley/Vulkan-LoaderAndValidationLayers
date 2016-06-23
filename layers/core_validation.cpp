@@ -585,53 +585,42 @@ static bool reportMemReferencesAndCleanUp(layer_data *dev_data, DEVICE_MEM_INFO 
     return skip_call;
 }
 
-static bool deleteMemObjInfo(layer_data *my_data, void *object, VkDeviceMemory mem) {
-    bool skip_call = false;
-    auto item = my_data->memObjMap.find(mem);
-    if (item != my_data->memObjMap.end()) {
-        my_data->memObjMap.erase(item);
-    } else {
-        skip_call = log_msg(my_data->report_data, VK_DEBUG_REPORT_ERROR_BIT_EXT, VK_DEBUG_REPORT_OBJECT_TYPE_DEVICE_MEMORY_EXT,
-                            (uint64_t)mem, __LINE__, MEMTRACK_INVALID_MEM_OBJ, "MEM",
-                            "Request to delete memory object 0x%" PRIxLEAST64 " not present in memory Object Map", (uint64_t)mem);
-    }
-    return skip_call;
-}
-
 static bool freeMemObjInfo(layer_data *dev_data, void *object, VkDeviceMemory mem, bool internal) {
     bool skip_call = false;
     // Parse global list to find info w/ mem
     DEVICE_MEM_INFO *pInfo = getMemObjInfo(dev_data, mem);
     if (pInfo) {
-        if (pInfo->allocInfo.allocationSize == 0 && !internal) {
-            // TODO: Verify against Valid Use section
-            skip_call = log_msg(dev_data->report_data, VK_DEBUG_REPORT_ERROR_BIT_EXT, VK_DEBUG_REPORT_OBJECT_TYPE_DEVICE_MEMORY_EXT,
-                                (uint64_t)mem, __LINE__, MEMTRACK_INVALID_MEM_OBJ, "MEM",
-                                "Attempting to free memory associated with a Persistent Image, 0x%" PRIxLEAST64 ", "
-                                "this should not be explicitly freed\n",
-                                (uint64_t)mem);
-        } else {
-            // Clear any CB bindings for completed CBs
-            //   TODO : Is there a better place to do this?
+        // TODO: Verify against Valid Use section
 
-            assert(pInfo->object != VK_NULL_HANDLE);
-            // clear_cmd_buf_and_mem_references removes elements from
-            // pInfo->commandBufferBindings -- this copy not needed in c++14,
-            // and probably not needed in practice in c++11
-            auto bindings = pInfo->commandBufferBindings;
-            for (auto cb : bindings) {
-                if (!dev_data->globalInFlightCmdBuffers.count(cb)) {
-                    clear_cmd_buf_and_mem_references(dev_data, cb);
-                }
-            }
+        // Clear any CB bindings for completed CBs
+        //   TODO : Is there a better place to do this?
 
-            // Now verify that no references to this mem obj remain and remove bindings
-            if (pInfo->commandBufferBindings.size() || pInfo->objBindings.size()) {
-                skip_call |= reportMemReferencesAndCleanUp(dev_data, pInfo);
+        assert(pInfo->object != VK_NULL_HANDLE);
+        // clear_cmd_buf_and_mem_references removes elements from
+        // pInfo->commandBufferBindings -- this copy not needed in c++14,
+        // and probably not needed in practice in c++11
+        auto bindings = pInfo->commandBufferBindings;
+        for (auto cb : bindings) {
+            if (!dev_data->globalInFlightCmdBuffers.count(cb)) {
+                clear_cmd_buf_and_mem_references(dev_data, cb);
             }
-            // Delete mem obj info
-            skip_call |= deleteMemObjInfo(dev_data, object, mem);
         }
+
+        // Now verify that no references to this mem obj remain and remove bindings
+        if (pInfo->commandBufferBindings.size() || pInfo->objBindings.size()) {
+            skip_call |= reportMemReferencesAndCleanUp(dev_data, pInfo);
+        }
+        // Delete mem obj info
+        dev_data->memObjMap.erase(dev_data->memObjMap.find(mem));
+    } else if (VK_NULL_HANDLE != mem) {
+        // The request is to free an invalid, non-zero handle
+        skip_call = log_msg(dev_data->report_data, VK_DEBUG_REPORT_ERROR_BIT_EXT,
+                           VK_DEBUG_REPORT_OBJECT_TYPE_DEVICE_MEMORY_EXT,
+                           reinterpret_cast<uint64_t &>(mem), __LINE__,
+                           MEMTRACK_INVALID_MEM_OBJ,
+                           "MEM", "Request to delete memory object 0x%"
+                           PRIxLEAST64 " not present in memory Object Map",
+                           reinterpret_cast<uint64_t &>(mem));
     }
     return skip_call;
 }
@@ -5271,7 +5260,7 @@ BindBufferMemory(VkDevice device, VkBuffer buffer, VkDeviceMemory mem, VkDeviceS
                 skip_call |=
                     log_msg(dev_data->report_data, VK_DEBUG_REPORT_ERROR_BIT_EXT, VK_DEBUG_REPORT_OBJECT_TYPE_PHYSICAL_DEVICE_EXT,
                             0, __LINE__, DRAWSTATE_INVALID_TEXEL_BUFFER_OFFSET, "DS",
-                            "vkBindBufferMemory(): memoryOffset is 0x%" PRIxLEAST64 " but must be a multiple of "
+                            "vkBindBufferMemory(): texel memoryOffset is 0x%" PRIxLEAST64 " but must be a multiple of "
                             "device limit minTexelBufferOffsetAlignment 0x%" PRIxLEAST64,
                             memoryOffset, dev_data->phys_dev_properties.properties.limits.minTexelBufferOffsetAlignment);
             }
@@ -5282,7 +5271,7 @@ BindBufferMemory(VkDevice device, VkBuffer buffer, VkDeviceMemory mem, VkDeviceS
                 skip_call |=
                     log_msg(dev_data->report_data, VK_DEBUG_REPORT_ERROR_BIT_EXT, VK_DEBUG_REPORT_OBJECT_TYPE_PHYSICAL_DEVICE_EXT,
                             0, __LINE__, DRAWSTATE_INVALID_UNIFORM_BUFFER_OFFSET, "DS",
-                            "vkBindBufferMemory(): memoryOffset is 0x%" PRIxLEAST64 " but must be a multiple of "
+                            "vkBindBufferMemory(): uniform memoryOffset is 0x%" PRIxLEAST64 " but must be a multiple of "
                             "device limit minUniformBufferOffsetAlignment 0x%" PRIxLEAST64,
                             memoryOffset, dev_data->phys_dev_properties.properties.limits.minUniformBufferOffsetAlignment);
             }
@@ -5293,7 +5282,7 @@ BindBufferMemory(VkDevice device, VkBuffer buffer, VkDeviceMemory mem, VkDeviceS
                 skip_call |=
                     log_msg(dev_data->report_data, VK_DEBUG_REPORT_ERROR_BIT_EXT, VK_DEBUG_REPORT_OBJECT_TYPE_PHYSICAL_DEVICE_EXT,
                             0, __LINE__, DRAWSTATE_INVALID_STORAGE_BUFFER_OFFSET, "DS",
-                            "vkBindBufferMemory(): memoryOffset is 0x%" PRIxLEAST64 " but must be a multiple of "
+                            "vkBindBufferMemory(): storage memoryOffset is 0x%" PRIxLEAST64 " but must be a multiple of "
                             "device limit minStorageBufferOffsetAlignment 0x%" PRIxLEAST64,
                             memoryOffset, dev_data->phys_dev_properties.properties.limits.minStorageBufferOffsetAlignment);
             }
